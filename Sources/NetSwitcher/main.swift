@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 // MARK: - Models
 
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var configStore = ConfigStore()
     private var currentConfig: Config = Config(profiles: [])
     private var lastAppliedProfileName: String?
+    private var configEditorWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // hide dock icon
@@ -145,8 +147,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openConfigAction() {
-        let url = configStore.configURL
-        NSWorkspace.shared.open(url)
+        if let wc = configEditorWindowController {
+            wc.showWindow(nil)
+            wc.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let vm = ConfigEditorViewModel(
+            configStore: configStore,
+            onSaveSuccess: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.loadConfig()
+                    self?.rebuildMenu()
+                    self?.notify(title: "Config", body: "Saved")
+                }
+            }
+        )
+
+        let view = ConfigEditorView(viewModel: vm)
+
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "NetSwitcher Config"
+        window.setContentSize(NSSize(width: 860, height: 560))
+        window.styleMask.insert(.resizable)
+        window.center()
+
+        let wc = NSWindowController(window: window)
+        self.configEditorWindowController = wc
+
+        // clear ref when closed
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.configEditorWindowController = nil
+        }
+
+        wc.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func showNetworkServicesAction() {
@@ -196,6 +237,15 @@ final class ConfigStore {
 
     var configURL: URL {
         appSupportDir.appendingPathComponent("profiles.json")
+    }
+
+    func save(_ config: Config) throws {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: appSupportDir.path) {
+            try fm.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        }
+        let data = try JSONEncoder.pretty.encode(config)
+        try data.write(to: configURL, options: .atomic)
     }
 
     func loadOrCreateSample() throws -> Config {
@@ -421,6 +471,376 @@ extension JSONEncoder {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys]
         return e
+    }
+}
+
+// MARK: - Config Editor UI (SwiftUI)
+
+final class ConfigEditorViewModel: ObservableObject {
+    @Published var config: Config = Config(profiles: [])
+    @Published var selectedIndex: Int = 0
+    @Published var statusMessage: String = ""
+    @Published var bypassText: String = "" // UI helper for selected profile
+
+    private let configStore: ConfigStore
+    private let onSaveSuccess: (() -> Void)?
+
+    init(configStore: ConfigStore, onSaveSuccess: (() -> Void)? = nil) {
+        self.configStore = configStore
+        self.onSaveSuccess = onSaveSuccess
+        load()
+    }
+
+    func load() {
+        do {
+            let loaded = try configStore.loadOrCreateSample()
+            self.config = loaded
+            if config.profiles.isEmpty {
+                selectedIndex = 0
+                bypassText = ""
+            } else {
+                selectedIndex = min(selectedIndex, config.profiles.count - 1)
+                syncBypassTextFromSelected()
+            }
+            statusMessage = "Loaded"
+        } catch {
+            statusMessage = "Load failed: \(error.localizedDescription)"
+        }
+    }
+
+    func save() {
+        guard config.profiles.indices.contains(selectedIndex) else {
+            do {
+                try configStore.save(config)
+                statusMessage = "Saved"
+                onSaveSuccess?()
+            } catch {
+                statusMessage = "Save failed: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        // sync bypass text back into model before save
+        let lines = bypassText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        config.profiles[selectedIndex].proxy.bypassDomains = lines
+
+        do {
+            try configStore.save(config)
+            statusMessage = "Saved"
+            onSaveSuccess?()
+        } catch {
+            statusMessage = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    func addProfile() {
+        let newProfile = NetworkProfile(
+            name: "New Profile",
+            networkService: "Wi-Fi",
+            wifiSSID: "",
+            wifiPassword: "",
+            proxy: ProxyConfig(
+                enabled: false,
+                host: "",
+                port: 8080,
+                applyTo: [.web, .secureweb],
+                bypassDomains: []
+            )
+        )
+        config.profiles.append(newProfile)
+        selectedIndex = max(0, config.profiles.count - 1)
+        syncBypassTextFromSelected()
+    }
+
+    func removeSelectedProfile() {
+        guard config.profiles.indices.contains(selectedIndex) else { return }
+        config.profiles.remove(at: selectedIndex)
+        if config.profiles.isEmpty {
+            selectedIndex = 0
+            bypassText = ""
+        } else {
+            selectedIndex = min(selectedIndex, config.profiles.count - 1)
+            syncBypassTextFromSelected()
+        }
+    }
+
+    func selectionChanged(to idx: Int) {
+        guard config.profiles.indices.contains(idx) else { return }
+        // persist current bypass text into current selected profile before switching
+        if config.profiles.indices.contains(selectedIndex) {
+            let lines = bypassText
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            config.profiles[selectedIndex].proxy.bypassDomains = lines
+        }
+        selectedIndex = idx
+        syncBypassTextFromSelected()
+    }
+
+    private func syncBypassTextFromSelected() {
+        guard config.profiles.indices.contains(selectedIndex) else {
+            bypassText = ""
+            return
+        }
+        bypassText = (config.profiles[selectedIndex].proxy.bypassDomains ?? []).joined(separator: "\n")
+    }
+}
+
+struct ConfigEditorView: View {
+    @ObservedObject var viewModel: ConfigEditorViewModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            leftPane
+            Divider()
+            rightPane
+        }
+        .frame(minWidth: 860, minHeight: 560)
+    }
+
+    private var leftPane: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Profiles")
+                    .font(.headline)
+                Spacer()
+                Button(action: { viewModel.addProfile() }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+
+                Button(action: { viewModel.removeSelectedProfile() }) {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 18, height: 18)
+                }
+                .disabled(!viewModel.config.profiles.indices.contains(viewModel.selectedIndex))
+                .disabled(!viewModel.config.profiles.indices.contains(viewModel.selectedIndex))
+            }
+
+            List(selection: Binding(
+                get: { viewModel.config.profiles.indices.contains(viewModel.selectedIndex) ? viewModel.selectedIndex : nil },
+                set: { newValue in
+                    if let idx = newValue {
+                        viewModel.selectionChanged(to: idx)
+                    }
+                })
+            ) {
+                ForEach(Array(viewModel.config.profiles.enumerated()), id: \.offset) { index, profile in
+                    Text(profile.name.isEmpty ? "(No name)" : profile.name)
+                        .tag(Optional(index))
+                }
+            }
+
+            Text(viewModel.statusMessage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Button("Reload") { viewModel.load() }
+                Spacer()
+                Button("Save") { viewModel.save() }
+                    .keyboardShortcut("s", modifiers: [.command])
+            }
+        }
+        .padding(12)
+        .frame(width: 240)
+    }
+
+    private var rightPane: some View {
+        Group {
+            if viewModel.config.profiles.indices.contains(viewModel.selectedIndex) {
+                let idx = viewModel.selectedIndex
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        GroupBox("Profile") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                LabeledTextField("Name", text: bindingString(\.name, at: idx))
+                                LabeledTextField("Network Service", text: bindingOptionalString(\.networkService, at: idx, defaultValue: "Wi-Fi"))
+                                LabeledTextField("Wi-Fi SSID", text: bindingOptionalString(\.wifiSSID, at: idx))
+                                LabeledSecureField("Wi-Fi Password", text: bindingOptionalString(\.wifiPassword, at: idx))
+                            }
+                            .padding(.top, 4)
+                        }
+
+                        GroupBox("Proxy") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle("Enable Proxy", isOn: bindingProxyEnabled(at: idx))
+
+                                LabeledTextField("Host", text: bindingProxyHost(at: idx))
+                                    .disabled(!viewModel.config.profiles[idx].proxy.enabled)
+
+                                HStack {
+                                    Text("Port")
+                                        .frame(width: 110, alignment: .leading)
+
+                                    TextField(
+                                        "8080",
+                                        text: bindingProxyPortString(at: idx)
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+                                    .disabled(!viewModel.config.profiles[idx].proxy.enabled)
+                                    .frame(maxWidth: 120, alignment: .leading)
+
+                                    Spacer()
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Apply To")
+                                        .font(.subheadline)
+
+                                    Toggle("HTTP (web)", isOn: bindingApplyTo(.web, at: idx))
+                                        .disabled(!viewModel.config.profiles[idx].proxy.enabled)
+
+                                    Toggle("HTTPS (secureweb)", isOn: bindingApplyTo(.secureweb, at: idx))
+                                        .disabled(!viewModel.config.profiles[idx].proxy.enabled)
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Bypass Domains (mỗi dòng 1 giá trị)")
+                                        .font(.subheadline)
+
+                                    TextEditor(text: $viewModel.bypassText)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .frame(height: 120)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                                        )
+                                        .disabled(!viewModel.config.profiles[idx].proxy.enabled)
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+
+                        Spacer(minLength: 8)
+                    }
+                    .padding(16)
+                }
+            } else {
+                VStack {
+                    Spacer()
+                    Text("Chưa có profile")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    // MARK: Bindings helpers
+
+    private func bindingString(_ keyPath: WritableKeyPath<NetworkProfile, String>, at idx: Int) -> Binding<String> {
+        Binding(
+            get: { viewModel.config.profiles[idx][keyPath: keyPath] },
+            set: { viewModel.config.profiles[idx][keyPath: keyPath] = $0 }
+        )
+    }
+
+    private func bindingOptionalString(_ keyPath: WritableKeyPath<NetworkProfile, String?>, at idx: Int, defaultValue: String = "") -> Binding<String> {
+        Binding(
+            get: { viewModel.config.profiles[idx][keyPath: keyPath] ?? defaultValue },
+            set: { newValue in
+                let trimmed = newValue
+                viewModel.config.profiles[idx][keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
+            }
+        )
+    }
+
+    private func bindingProxyEnabled(at idx: Int) -> Binding<Bool> {
+        Binding(
+            get: { viewModel.config.profiles[idx].proxy.enabled },
+            set: { viewModel.config.profiles[idx].proxy.enabled = $0 }
+        )
+    }
+
+    private func bindingProxyHost(at idx: Int) -> Binding<String> {
+        Binding(
+            get: { viewModel.config.profiles[idx].proxy.host ?? "" },
+            set: { viewModel.config.profiles[idx].proxy.host = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private func bindingProxyPortString(at idx: Int) -> Binding<String> {
+        Binding(
+            get: {
+                if let p = viewModel.config.profiles[idx].proxy.port {
+                    return String(p)
+                }
+                return ""
+            },
+            set: { newValue in
+                let cleaned = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if cleaned.isEmpty {
+                    viewModel.config.profiles[idx].proxy.port = nil
+                } else if let p = Int(cleaned) {
+                    viewModel.config.profiles[idx].proxy.port = p
+                }
+            }
+        )
+    }
+
+    private func bindingApplyTo(_ type: ProxyType, at idx: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                let arr = viewModel.config.profiles[idx].proxy.applyTo ?? []
+                return arr.contains(type)
+            },
+            set: { enabled in
+                var arr = viewModel.config.profiles[idx].proxy.applyTo ?? []
+                if enabled {
+                    if !arr.contains(type) { arr.append(type) }
+                } else {
+                    arr.removeAll { $0 == type }
+                }
+                viewModel.config.profiles[idx].proxy.applyTo = arr
+            }
+        )
+    }
+}
+
+// MARK: - Small UI components
+
+struct LabeledTextField: View {
+    let label: String
+    @Binding var text: String
+
+    init(_ label: String, text: Binding<String>) {
+        self.label = label
+        self._text = text
+    }
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .frame(width: 110, alignment: .leading)
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+}
+
+struct LabeledSecureField: View {
+    let label: String
+    @Binding var text: String
+
+    init(_ label: String, text: Binding<String>) {
+        self.label = label
+        self._text = text
+    }
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .frame(width: 110, alignment: .leading)
+            SecureField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+        }
     }
 }
 

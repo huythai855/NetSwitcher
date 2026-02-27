@@ -9,6 +9,7 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RES_DIR="${CONTENTS_DIR}/Resources"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
+ICON_ICNS="assets/AppIcon.icns"
 
 if [ ! -f "$BIN_PATH" ]; then
   echo "❌ Không thấy binary ở $BIN_PATH"
@@ -22,6 +23,14 @@ mkdir -p "$MACOS_DIR" "$RES_DIR"
 # Copy executable
 cp "$BIN_PATH" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
+
+if [ -f "$ICON_ICNS" ]; then
+  cp "$ICON_ICNS" "${RES_DIR}/AppIcon.icns"
+  echo "🎨 Added app icon: $ICON_ICNS"
+else
+  echo "ℹ️ No icon found at $ICON_ICNS (skip)"
+fi
+
 
 # Info.plist
 cat > "$PLIST_PATH" <<EOF
@@ -58,6 +67,9 @@ cat > "$PLIST_PATH" <<EOF
 
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
 
   <!-- Menu bar app, không hiện Dock icon -->
   <key>LSUIElement</key>

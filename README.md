@@ -1,6 +1,6 @@
 # NetSwitcher
 
-**Version 1.0**
+**Version 2.0**
 
 NetSwitcher is a lightweight Menu Bar application for macOS to quickly switch between network configurations (WiFi SSID, Password, Proxies) with just one click.
 
@@ -8,7 +8,7 @@ NetSwitcher is a lightweight Menu Bar application for macOS to quickly switch be
 - **Profile Management**: Support for multiple network profiles.
 - **Auto Wi-Fi Switching**: Connects to Wi-Fi access points based on saved SSIDs and passwords.
 - **Proxy Management**: Automatically enables/disables Web Proxy (HTTP) and Secure Web Proxy (HTTPS), configures ports, and sets Bypass Domains when switching networks.
-- **Quick Config Access**: Easily edit the JSON configuration file right from the Menu Bar.
+- **Native UI Editor**: Easily create, edit, and organize network profiles using a clean SwiftUI interface right from the Menu Bar.
 
 ## System Requirements
 - macOS 13.0 or later.
@@ -16,29 +16,35 @@ NetSwitcher is a lightweight Menu Bar application for macOS to quickly switch be
 
 ## Installation & Usage
 
-### 1. Build & Run as a Command Line App (Dev)
-Shows directly in the Menu Bar but runs as a Terminal Process:
-```bash
-swift run
-```
+### 1. Download & Install (Recommended)
+You do not need to build the app yourself. Simply grab the latest version from the Releases page!
+1. Download **`NetSwitcher.dmg`** or **`NetSwitcher.app.zip`** from the **[Releases](../../releases)** page.
+2. If using the DMG, double-click to mount it.
+3. Drag and drop **NetSwitcher** into your **`/Applications`** folder.
+4. Launch NetSwitcher from your Launchpad!
 
-### 2. Package as a macOS App (.app)
-For convenience (no need to keep a Terminal window open) and to allow the app to launch on startup, bundle it into a `.app`:
+### 2. Build from Source (Developers)
+If you want to compile and package the application yourself, you can use the provided build scripts:
 ```bash
-# Build the release version (optimized)
+# Compile the Swift project (optimized release)
 swift build -c release
 
-# Run the packaging script
-chmod +x bundle_app.sh
+# Generate macOS AppIcon (requires assets/icon.png)
+./make_icns.sh
+
+# Bundle the executable into an .app
 ./bundle_app.sh
+
+# Wrap the .app into a .dmg installer
+./make_dmg.sh
 ```
-Once completed, the `NetSwitcher.app` will be available in the `dist/` directory.
+Once completed, the `NetSwitcher.app` and `NetSwitcher.dmg` will be available in the `dist/` directory.
 
 ## Configuration (profiles.json)
-Network configurations are stored as a JSON file at:
+Network configurations are stored at:
 `~/Library/Application Support/NetSwitcher/profiles.json`
 
-You can create or edit this file directly from the **Open Config** menu item.
+You can use the built-in native **Config Editor** from the Menu Bar to manage them, or edit the file manually.
 
 **Example Profile Structure:**
 ```json
@@ -68,6 +74,6 @@ You can create or edit this file directly from the **Open Config** menu item.
 The application flow executes the macOS command-line tool `/usr/sbin/networksetup` under the hood. It may require Administrator privileges.
 
 ## Planned Features
-- [ ] **UI Menu Editor**: Create a native window editor instead of manually changing `profiles.json`.
+- [x] **UI Menu Editor**: Create a native window editor instead of manually changing `profiles.json`.
 - [ ] **Keyboard Shortcuts**: Assign global hotkeys for switching to specific profiles instantly.
 - [ ] **Export & Import**: Share network configurations across different Apple devices easily.
