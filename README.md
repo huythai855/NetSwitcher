@@ -1,6 +1,6 @@
 # NetSwitcher
 
-**Version 2.0**
+**Version 3.0**
 
 NetSwitcher is a lightweight Menu Bar application for macOS to quickly switch between network configurations (WiFi SSID, Password, Proxies) with just one click.
 
